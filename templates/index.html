@@ -35,9 +35,86 @@
             box-shadow: 0 2px 4px rgba(0,0,0,0.1);
         }
 
+        .header-left {
+            display: flex;
+            align-items: center;
+            gap: 12px;
+        }
+
         .header h1 {
             font-size: 18px;
             font-weight: 600;
+        }
+
+        .status-indicator {
+            display: flex;
+            align-items: center;
+            gap: 6px;
+            font-size: 14px;
+            padding: 4px 8px;
+            border-radius: 12px;
+            background: rgba(255,255,255,0.1);
+            transition: all 0.3s ease;
+        }
+
+        .status-dot {
+            width: 8px;
+            height: 8px;
+            border-radius: 50%;
+            transition: all 0.3s ease;
+        }
+
+        .status-online {
+            background: #34C759;
+            animation: pulse 2s infinite;
+        }
+
+        .status-offline {
+            background: #FF3B30;
+        }
+
+        .status-connecting {
+            background: #FF9500;
+            animation: pulse 1s infinite;
+        }
+
+        @keyframes pulse {
+            0% {
+                opacity: 1;
+                transform: scale(1);
+            }
+            50% {
+                opacity: 0.7;
+                transform: scale(1.2);
+            }
+            100% {
+                opacity: 1;
+                transform: scale(1);
+            }
+        }
+
+        .emotion-display {
+            font-size: 16px;
+            margin-left: 4px;
+            cursor: pointer;
+        }
+        
+        .emotion-tooltip {
+            position: absolute;
+            background: rgba(0, 0, 0, 0.8);
+            color: white;
+            padding: 8px 12px;
+            border-radius: 8px;
+            font-size: 12px;
+            white-space: nowrap;
+            z-index: 1000;
+            pointer-events: none;
+            opacity: 0;
+            transition: opacity 0.3s;
+        }
+        
+        .emotion-tooltip.show {
+            opacity: 1;
         }
 
         .clear-btn {
@@ -244,8 +321,27 @@
                 padding: 8px 12px;
             }
             
+            .header-left {
+                gap: 8px;
+            }
+            
             .header h1 {
                 font-size: 16px;
+            }
+            
+            .status-indicator {
+                font-size: 12px;
+                padding: 3px 6px;
+                gap: 4px;
+            }
+            
+            .status-dot {
+                width: 6px;
+                height: 6px;
+            }
+            
+            .emotion-display {
+                font-size: 14px;
             }
             
             .chat-container {
@@ -265,7 +361,14 @@
 <body>
     <div class="container">
         <div class="header">
-            <h1>小布</h1>
+            <div class="header-left">
+                <h1>小布</h1>
+                <div class="status-indicator" id="statusIndicator">
+                    <div class="status-dot status-connecting" id="statusDot"></div>
+                    <span id="statusText">连接中</span>
+                    <span class="emotion-display" id="emotionDisplay" onclick="updateXiaobuEmotion()"></span>
+                </div>
+            </div>
             <button class="clear-btn" onclick="clearContext()">清除上下文</button>
         </div>
         
@@ -285,6 +388,221 @@
         let isLoading = false;
         let lastError = null;
         let currentController = null; // 用于中断请求
+        let statusEventSource = null;
+        let emotionEventSource = null;
+        let connectionStatus = 'connecting';
+        let currentEmotion = null;
+        let xiaobuEmotionState = null;
+        let emotionUpdateInterval = null;
+
+        // 情绪表情映射
+        const emotionEmojis = {
+            'happy': '😊',
+            'sad': '😢',
+            'angry': '😠',
+            'anxious': '😰',
+            'excited': '🤩',
+            'neutral': '😐',
+            'very_happy': '😊',
+            'very_sad': '😭',
+            'tired': '😴',
+            'stressed': '😵'
+        };
+
+        // 获取并更新小布情绪状态
+        async function updateXiaobuEmotion() {
+            try {
+                const response = await fetch('/api/xiaobu/emotion');
+                const data = await response.json();
+                
+                if (response.ok) {
+                    xiaobuEmotionState = data;
+                    updateEmotionDisplay(data);
+                    console.log('小布情绪更新:', data);
+                } else {
+                    console.error('获取小布情绪失败:', data);
+                }
+            } catch (error) {
+                console.error('获取小布情绪错误:', error);
+            }
+        }
+
+        // 更新情绪显示
+        function updateEmotionDisplay(emotionData) {
+            const emotionDisplay = document.getElementById('emotionDisplay');
+            
+            if (emotionData && connectionStatus === 'online') {
+                emotionDisplay.textContent = emotionData.emoji;
+                emotionDisplay.title = `小布: ${emotionData.emotion} - ${emotionData.reason} (点击刷新)`;
+            } else if (connectionStatus === 'offline') {
+                emotionDisplay.textContent = '⚠️';
+                emotionDisplay.title = '连接断开';
+            } else {
+                emotionDisplay.textContent = '';
+                emotionDisplay.title = '';
+            }
+        }
+
+        // 启动定期情绪更新
+        function startEmotionUpdates() {
+            // 清除现有定时器
+            if (emotionUpdateInterval) {
+                clearInterval(emotionUpdateInterval);
+            }
+            
+            // 立即更新一次
+            updateXiaobuEmotion();
+            
+            // 每30秒更新一次情绪状态
+            emotionUpdateInterval = setInterval(() => {
+                if (connectionStatus === 'online') {
+                    updateXiaobuEmotion();
+                }
+            }, 30000);
+        }
+
+        // 更新状态显示
+        function updateStatusDisplay(status, emotion = null) {
+            const statusDot = document.getElementById('statusDot');
+            const statusText = document.getElementById('statusText');
+            
+            statusDot.className = 'status-dot status-' + status;
+            
+            switch(status) {
+                case 'online':
+                    statusText.textContent = '在线';
+                    // 连接恢复时启动情绪更新
+                    if (connectionStatus !== 'online') {
+                        startEmotionUpdates();
+                    }
+                    break;
+                case 'offline':
+                    statusText.textContent = '离线';
+                    // 离线时清除情绪更新定时器
+                    if (emotionUpdateInterval) {
+                        clearInterval(emotionUpdateInterval);
+                        emotionUpdateInterval = null;
+                    }
+                    break;
+                case 'connecting':
+                    statusText.textContent = '连接中';
+                    break;
+            }
+            
+            connectionStatus = status;
+            
+            // 更新情绪显示
+            if (status === 'online' && xiaobuEmotionState) {
+                updateEmotionDisplay(xiaobuEmotionState);
+            } else {
+                updateEmotionDisplay(null);
+            }
+        }
+
+        // 启动状态监控
+        function startStatusMonitoring() {
+            // 关闭现有连接
+            if (statusEventSource) {
+                statusEventSource.close();
+            }
+            
+            try {
+                statusEventSource = new EventSource('/api/realtime/status');
+                
+                statusEventSource.onopen = function(event) {
+                    console.log('状态监控连接已建立');
+                    updateStatusDisplay('online', currentEmotion);
+                };
+                
+                statusEventSource.onmessage = function(event) {
+                    try {
+                        const data = JSON.parse(event.data);
+                        console.log('收到状态更新:', data);
+                        updateStatusDisplay('online', currentEmotion);
+                    } catch (error) {
+                        console.error('解析状态数据失败:', error);
+                    }
+                };
+                
+                statusEventSource.onerror = function(event) {
+                    console.error('状态监控连接错误:', event);
+                    updateStatusDisplay('offline');
+                    
+                    // 3秒后尝试重连
+                    setTimeout(() => {
+                        if (connectionStatus === 'offline') {
+                            updateStatusDisplay('connecting');
+                            startStatusMonitoring();
+                        }
+                    }, 3000);
+                };
+                
+            } catch (error) {
+                console.error('启动状态监控失败:', error);
+                updateStatusDisplay('offline');
+            }
+        }
+
+        // 启动情绪监控
+        function startEmotionMonitoring() {
+            // 关闭现有连接
+            if (emotionEventSource) {
+                emotionEventSource.close();
+            }
+            
+            try {
+                emotionEventSource = new EventSource('/api/realtime/emotions');
+                
+                emotionEventSource.onopen = function(event) {
+                    console.log('情绪监控连接已建立');
+                };
+                
+                emotionEventSource.onmessage = function(event) {
+                    try {
+                        const data = JSON.parse(event.data);
+                        console.log('收到情绪更新:', data);
+                        
+                        if (data.new_emotions && data.new_emotions.length > 0) {
+                            // 获取最新的情绪记录
+                            const latestEmotion = data.new_emotions[data.new_emotions.length - 1];
+                            currentEmotion = latestEmotion.user_emotion;
+                            
+                            // 如果当前在线，更新情绪显示
+                            if (connectionStatus === 'online') {
+                                updateStatusDisplay('online', currentEmotion);
+                            }
+                        }
+                    } catch (error) {
+                        console.error('解析情绪数据失败:', error);
+                    }
+                };
+                
+                emotionEventSource.onerror = function(event) {
+                    console.error('情绪监控连接错误:', event);
+                    // 情绪监控失败不影响主要功能，只记录错误
+                };
+                
+            } catch (error) {
+                console.error('启动情绪监控失败:', error);
+            }
+        }
+
+        // 初始化实时监控
+        function initializeRealTimeMonitoring() {
+            updateStatusDisplay('connecting');
+            startStatusMonitoring();
+            startEmotionMonitoring();
+        }
+
+        // 页面关闭时清理连接
+        window.addEventListener('beforeunload', function() {
+            if (statusEventSource) {
+                statusEventSource.close();
+            }
+            if (emotionEventSource) {
+                emotionEventSource.close();
+            }
+        });
 
         function formatTimestamp(timestamp) {
             const date = new Date(timestamp);
@@ -570,6 +888,10 @@
         // 页面加载时初始化
         document.addEventListener('DOMContentLoaded', function() {
             console.log('页面加载完成，开始加载历史记录...');
+            
+            // 启动实时监控
+            initializeRealTimeMonitoring();
+            
             loadHistory();
             // 初始化输入框高度
             autoResize();
