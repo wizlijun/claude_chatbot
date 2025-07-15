@@ -147,13 +147,13 @@
         }
 
         .message.user {
-            margin-right: auto;
-            text-align: left;
+            margin-left: auto;
+            text-align: right;
         }
 
         .message.bot {
-            margin-left: auto;
-            text-align: right;
+            margin-right: auto;
+            text-align: left;
         }
 
         .message.system {
@@ -177,13 +177,13 @@
         }
 
         .message.user .message-content {
-            background: #E9E9EB;
-            color: #000;
+            background: #007AFF;
+            color: white;
         }
 
         .message.bot .message-content {
-            background: #007AFF;
-            color: white;
+            background: #E9E9EB;
+            color: #000;
         }
 
         .message.system .message-content {
@@ -198,8 +198,8 @@
         }
 
         .message.thinking .message-content {
-            background: #007AFF;
-            color: white;
+            background: #E9E9EB;
+            color: #666;
             font-style: italic;
             position: relative;
             opacity: 0.8;
@@ -210,7 +210,7 @@
             display: inline-block;
             width: 8px;
             height: 8px;
-            background: white;
+            background: #666;
             border-radius: 50%;
             margin-left: 8px;
             animation: thinking 1.5s infinite ease-in-out;
@@ -406,7 +406,20 @@
             'very_happy': '😊',
             'very_sad': '😭',
             'tired': '😴',
-            'stressed': '😵'
+            'stressed': '😵',
+            'sleepy': '😴',
+            'hungry': '😋',
+            'energetic': '💪',
+            'moody': '😤',
+            'camping': '🏕️',
+            'cycling': '🚴',
+            'hiking': '🥾',
+            'lazy_weekend': '😪',
+            'studying': '📚',
+            'rebellious': '😠',
+            'irritated': '😒',
+            'bored': '😑',
+            'playful': '😜'
         };
 
         // 获取并更新小布情绪状态
@@ -433,7 +446,24 @@
             
             if (emotionData && connectionStatus === 'online') {
                 emotionDisplay.textContent = emotionData.emoji;
-                emotionDisplay.title = `小布: ${emotionData.emotion} - ${emotionData.reason} (点击刷新)`;
+                
+                // 构建详细的tooltip信息
+                const timeInfo = emotionData.time_info;
+                const activityText = getActivityText(emotionData.activity, emotionData.is_weekend);
+                const stressText = emotionData.stress_level > 30 ? `压力:${emotionData.stress_level}` : '';
+                const hormonalText = emotionData.hormonal_state !== 'normal' ? `状态:${emotionData.hormonal_state}` : '';
+                
+                const tooltipParts = [
+                    `小布: ${emotionData.emotion}`,
+                    `原因: ${emotionData.reason}`,
+                    `活动: ${activityText}`,
+                    `情绪值: ${emotionData.emotion_value}/100`,
+                    stressText,
+                    hormonalText,
+                    '(点击刷新)'
+                ].filter(part => part); // 过滤空字符串
+                
+                emotionDisplay.title = tooltipParts.join('\n');
             } else if (connectionStatus === 'offline') {
                 emotionDisplay.textContent = '⚠️';
                 emotionDisplay.title = '连接断开';
@@ -441,6 +471,29 @@
                 emotionDisplay.textContent = '';
                 emotionDisplay.title = '';
             }
+        }
+
+        // 获取活动文本描述
+        function getActivityText(activity, isWeekend) {
+            const activityMap = {
+                'sleep': '睡眠时间',
+                'sleep_in': '补觉时间',
+                'breakfast': '早餐时间',
+                'lunch': '午餐时间',
+                'dinner': '晚餐时间',
+                'morning_study': '上午学习',
+                'afternoon_study': '下午学习',
+                'evening_study': '晚自习',
+                'afternoon_nap': '午休',
+                'outdoor_morning': '上午户外',
+                'outdoor_afternoon': '下午户外',
+                'entertainment': '娱乐时间',
+                'free_time': '自由时间',
+                'afternoon_rest': '下午休息'
+            };
+            
+            const weekendPrefix = isWeekend ? '周末-' : '';
+            return weekendPrefix + (activityMap[activity] || activity);
         }
 
         // 启动定期情绪更新

@@ -12,6 +12,7 @@ from datetime import datetime, timedelta
 from collections import deque
 import re
 import requests
+import random
 
 app = Flask(__name__)
 CORS(app)
@@ -50,10 +51,94 @@ XIAOBU_STATE = {
     'weather_factor': 0,  # 天气影响因子
     'chat_load_factor': 0,  # 聊天负载因子
     'sentiment_factor': 0,  # 情感影响因子
+    'time_factor': 0,  # 时间因子（基于作息时间）
+    'adolescent_factor': 0,  # 青春期随机因子
     'last_weather_update': None,
     'chat_frequency': deque(maxlen=50),  # 记录最近50次聊天时间
     'weather_cache': None,
-    'weather_cache_time': None
+    'weather_cache_time': None,
+    'last_mood_swing': None,  # 上次情绪波动时间
+    'current_hormonal_state': 'normal',  # 当前荷尔蒙状态
+    'stress_level': 0,  # 压力等级 (0-100)
+}
+
+# 初中生作息时间表
+DAILY_SCHEDULE = {
+    'weekday': {
+        'sleep': [(22, 0), (6, 0)],  # 22:00-6:00 睡眠时间
+        'breakfast': (7, 0, 8, 0),  # 7:00-8:00 早餐
+        'morning_study': (8, 0, 12, 0),  # 8:00-12:00 上午学习
+        'lunch': (12, 0, 13, 0),  # 12:00-13:00 午餐
+        'afternoon_nap': (13, 0, 14, 0),  # 13:00-14:00 午休
+        'afternoon_study': (14, 0, 17, 0),  # 14:00-17:00 下午学习
+        'dinner': (17, 0, 18, 0),  # 17:00-18:00 晚餐
+        'evening_study': (18, 0, 21, 0),  # 18:00-21:00 晚自习
+        'free_time': (21, 0, 22, 0),  # 21:00-22:00 自由时间
+    },
+    'weekend': {
+        'sleep_in': (22, 0, 10, 0),  # 22:00-10:00 补觉
+        'outdoor_morning': (10, 0, 12, 0),  # 10:00-12:00 户外活动
+        'lunch': (12, 0, 13, 0),  # 12:00-13:00 午餐
+        'afternoon_rest': (13, 0, 15, 0),  # 13:00-15:00 自由时间
+        'outdoor_afternoon': (15, 0, 18, 0),  # 15:00-18:00 户外活动
+        'dinner': (18, 0, 19, 0),  # 18:00-19:00 晚餐
+        'entertainment': (19, 0, 22, 0),  # 19:00-22:00 娱乐时间
+    }
+}
+
+# 小布身份信息
+XIAOBU_IDENTITY = {
+    'name': '小布',
+    'age': 14,
+    'grade': '初二',
+    'school': '武汉市第三中学',
+    'nationality': '中国',
+    'location': '武汉',
+    'birthday': '2010-03-15',  # 2010年3月15日生
+    'interests': ['骑车', '露营', '徒步', '游戏', '动漫', '篮球'],
+    'subjects': {
+        'favorite': ['体育', '美术'],
+        'difficult': ['数学', '物理'],
+        'okay': ['语文', '英语', '历史', '地理']
+    }
+}
+
+# 中国学生假期配置
+HOLIDAY_CALENDAR = {
+    'winter_vacation': {  # 寒假
+        'start_month': 1, 'start_day': 15,
+        'end_month': 2, 'end_day': 25,
+        'description': '寒假'
+    },
+    'summer_vacation': {  # 暑假  
+        'start_month': 7, 'start_day': 1,
+        'end_month': 8, 'end_day': 31,
+        'description': '暑假'
+    },
+    'national_holidays': [  # 法定节假日
+        {'month': 1, 'day': 1, 'name': '元旦', 'days': 1},
+        {'month': 2, 'day': 10, 'name': '春节', 'days': 7},  # 农历新年，日期会变
+        {'month': 4, 'day': 5, 'name': '清明节', 'days': 1},
+        {'month': 5, 'day': 1, 'name': '劳动节', 'days': 3},
+        {'month': 6, 'day': 22, 'name': '端午节', 'days': 1},  # 农历节日，日期会变
+        {'month': 9, 'day': 15, 'name': '中秋节', 'days': 1},  # 农历节日，日期会变
+        {'month': 10, 'day': 1, 'name': '国庆节', 'days': 7},
+    ],
+    'exam_periods': [  # 考试周期
+        {'month': 1, 'start_day': 8, 'end_day': 14, 'name': '期末考试'},
+        {'month': 6, 'start_day': 20, 'end_day': 25, 'name': '期末考试'},
+        {'month': 11, 'start_day': 5, 'end_day': 10, 'name': '期中考试'},
+        {'month': 5, 'start_day': 8, 'end_day': 12, 'name': '期中考试'},
+    ]
+}
+
+# 青春期情绪波动配置
+ADOLESCENT_MOODS = {
+    'irritable': {'probability': 0.15, 'intensity': -20, 'duration': 60},  # 易怒
+    'moody': {'probability': 0.12, 'intensity': -15, 'duration': 45},  # 情绪不稳
+    'rebellious': {'probability': 0.08, 'intensity': -25, 'duration': 90},  # 叛逆
+    'hyperactive': {'probability': 0.10, 'intensity': 25, 'duration': 30},  # 亢奋
+    'emotional': {'probability': 0.18, 'intensity': -10, 'duration': 120},  # 敏感
 }
 
 # 情绪emoji映射
@@ -67,7 +152,22 @@ EMOTION_EMOJIS = {
     'anxious': '😰',
     'excited': '🤩',
     'tired': '😴',
-    'stressed': '😵'
+    'stressed': '😵',
+    'sleepy': '😴',
+    'hungry': '😋',
+    'energetic': '💪',
+    'moody': '😤',
+    'camping': '🏕️',
+    'cycling': '🚴',
+    'hiking': '🥾',
+    'lazy_weekend': '😪',
+    'studying': '📚',
+    'rebellious': '😠',
+    'irritated': '😒',
+    'bored': '😑',
+    'playful': '😜',
+    'nervous': '😬',
+    'confused': '😕'
 }
 
 def ensure_data_dir():
@@ -202,12 +302,18 @@ def calculate_xiaobu_emotion():
     weather_factor = calculate_weather_factor()
     chat_load_factor, chat_reason = calculate_chat_load_factor()
     sentiment_factor, sentiment_reason = calculate_sentiment_factor()
+    time_factor, time_reason, holiday_type, holiday_name = calculate_time_factor()
+    adolescent_factor, adolescent_reason = calculate_adolescent_factor()
+    stress_factor = update_stress_level()
     
     # 计算总情绪值
     total_emotion = (XIAOBU_STATE['base_emotion'] + 
                     weather_factor + 
                     chat_load_factor + 
-                    sentiment_factor)
+                    sentiment_factor + 
+                    time_factor + 
+                    adolescent_factor - 
+                    stress_factor * 0.3)  # 压力负面影响
     
     # 限制在0-100范围内
     total_emotion = max(0, min(100, total_emotion))
@@ -216,34 +322,30 @@ def calculate_xiaobu_emotion():
     XIAOBU_STATE['weather_factor'] = weather_factor
     XIAOBU_STATE['chat_load_factor'] = chat_load_factor
     XIAOBU_STATE['sentiment_factor'] = sentiment_factor
+    XIAOBU_STATE['time_factor'] = time_factor
+    XIAOBU_STATE['adolescent_factor'] = adolescent_factor
     
-    # 确定情绪类型和原因
-    if total_emotion >= 80:
-        emotion_type = 'very_happy'
-        reason = "心情很好"
-    elif total_emotion >= 65:
-        emotion_type = 'happy' 
-        reason = "心情不错"
-    elif total_emotion >= 45:
-        emotion_type = 'neutral'
-        reason = "心情一般"
-    elif total_emotion >= 30:
-        emotion_type = 'sad'
-        reason = "有点不开心"
-    else:
-        emotion_type = 'very_sad'
-        reason = "心情很低落"
+    # 获取当前时间段信息
+    activity, is_weekend, _, _ = get_current_time_period()
+    
+    # 根据时间段和情绪值确定具体情绪类型
+    emotion_type, reason = determine_emotion_type(total_emotion, activity, is_weekend, 
+                                                 time_factor, adolescent_factor, 
+                                                 holiday_type, holiday_name)
     
     # 根据主要影响因子调整原因
     factors = [
         (abs(weather_factor), "天气" if weather_factor > 0 else "天气不好"),
         (abs(chat_load_factor), chat_reason),
-        (abs(sentiment_factor), sentiment_reason)
+        (abs(sentiment_factor), sentiment_reason),
+        (abs(time_factor), time_reason),
+        (abs(adolescent_factor), adolescent_reason),
+        (abs(stress_factor), "压力大" if stress_factor > 20 else "")
     ]
     
     # 找到影响最大的因子
     max_factor = max(factors, key=lambda x: x[0])
-    if max_factor[0] > 5:  # 如果影响因子足够大
+    if max_factor[0] > 10:  # 如果影响因子足够大
         reason = max_factor[1]
     
     return {
@@ -251,17 +353,347 @@ def calculate_xiaobu_emotion():
         'emotion_type': emotion_type,
         'emoji': EMOTION_EMOJIS[emotion_type],
         'reason': reason[:10],  # 限制10个字以内
+        'activity': activity,
+        'is_weekend': is_weekend,
+        'holiday_type': holiday_type,
+        'holiday_name': holiday_name,
+        'stress_level': XIAOBU_STATE['stress_level'],
+        'identity': XIAOBU_IDENTITY,
         'factors': {
             'weather': weather_factor,
             'chat_load': chat_load_factor, 
             'sentiment': sentiment_factor,
+            'time': time_factor,
+            'adolescent': adolescent_factor,
+            'stress': stress_factor,
             'base': XIAOBU_STATE['base_emotion']
         }
     }
 
+def determine_emotion_type(emotion_value, activity, is_weekend, time_factor, adolescent_factor, holiday_type, holiday_name):
+    """根据情绪值和当前活动确定具体的情绪类型"""
+    
+    # 假期特殊状态
+    if holiday_type == 'winter_vacation':
+        if emotion_value >= 80:
+            return 'very_happy', "寒假开心"
+        elif activity == 'sleep_in' and emotion_value < 30:
+            return 'sleepy', "寒假被吵醒"
+        else:
+            return 'happy', "寒假心情好"
+    
+    elif holiday_type == 'summer_vacation':
+        if emotion_value >= 85:
+            return 'very_happy', "暑假太爽"
+        elif activity in ['outdoor_morning', 'outdoor_afternoon']:
+            activities = ['camping', 'cycling', 'hiking']
+            chosen = random.choice(activities)
+            return chosen, f"暑假想{['露营', '骑车', '徒步'][activities.index(chosen)]}"
+        else:
+            return 'happy', "暑假开心"
+    
+    elif holiday_type == 'national_holiday':
+        return 'happy', f"{holiday_name}开心"
+    
+    elif holiday_type == 'exam_period':
+        if emotion_value < 30:
+            return 'stressed', f"{holiday_name}焦虑"
+        elif activity in ['morning_study', 'afternoon_study', 'evening_study']:
+            return 'anxious', "考试压力大"
+        else:
+            return 'nervous', "考试紧张"
+    
+    # 特殊情况：睡眠被打扰
+    if activity in ['sleep', 'sleep_in'] and emotion_value < 40:
+        return 'sleepy', "被吵醒了"
+    
+    # 青春期特殊状态
+    if XIAOBU_STATE['current_hormonal_state'] != 'normal':
+        hormonal_state = XIAOBU_STATE['current_hormonal_state']
+        if hormonal_state == 'irritable':
+            return 'irritated', "心情烦躁"
+        elif hormonal_state == 'rebellious':
+            return 'rebellious', "有点叛逆"
+        elif hormonal_state == 'moody':
+            return 'moody', "情绪不稳"
+        elif hormonal_state == 'hyperactive':
+            return 'energetic', "精力充沛"
+        elif hormonal_state == 'emotional':
+            return 'anxious', "情绪敏感"
+    
+    # 饥饿状态
+    if activity in ['breakfast', 'lunch', 'dinner'] and time_factor < -15:
+        return 'hungry', "肚子饿了"
+    
+    # 周末户外活动
+    if is_weekend and activity in ['outdoor_morning', 'outdoor_afternoon']:
+        if emotion_value >= 70:
+            activities = {
+                'camping': '想露营',
+                'cycling': '想骑车', 
+                'hiking': '想徒步'
+            }
+            chosen = random.choice(list(activities.keys()))
+            return chosen, activities[chosen]
+        else:
+            return 'lazy_weekend', "周末想躺平"
+    
+    # 学习时间 - 根据小布的科目喜好
+    if activity in ['morning_study', 'afternoon_study', 'evening_study']:
+        if holiday_type == 'school_day':  # 只有上学日才有学习情绪
+            if emotion_value >= 65:
+                return 'studying', "学习状态"
+            elif emotion_value < 40:
+                return 'bored', "不想学习"
+        else:
+            # 假期不想学习
+            return 'rebellious', "假期不想学"
+    
+    # 午休时间
+    if activity in ['afternoon_nap', 'afternoon_rest']:
+        return 'sleepy', "午休时间"
+    
+    # 娱乐时间
+    if activity == 'entertainment' or (activity == 'free_time' and emotion_value >= 60):
+        return 'playful', "放松时间"
+    
+    # 基础情绪判断
+    if emotion_value >= 85:
+        return 'very_happy', "心情超好"
+    elif emotion_value >= 70:
+        return 'happy', "心情不错"
+    elif emotion_value >= 55:
+        return 'neutral', "心情一般"
+    elif emotion_value >= 40:
+        return 'sad', "有点失落"
+    elif emotion_value >= 25:
+        return 'anxious', "心情不佳"
+    else:
+        return 'very_sad', "心情很差"
+
 def record_chat_time():
     """记录聊天时间用于负载计算"""
     XIAOBU_STATE['chat_frequency'].append(datetime.now())
+
+def check_holiday_status():
+    """检查当前是否为假期"""
+    now = datetime.now()
+    month = now.month
+    day = now.day
+    
+    # 检查寒假
+    winter = HOLIDAY_CALENDAR['winter_vacation']
+    if (month == winter['start_month'] and day >= winter['start_day']) or \
+       (month == winter['end_month'] and day <= winter['end_day']):
+        return 'winter_vacation', '寒假'
+    
+    # 检查暑假
+    summer = HOLIDAY_CALENDAR['summer_vacation']
+    if month >= summer['start_month'] and month <= summer['end_month']:
+        if (month == summer['start_month'] and day >= summer['start_day']) or \
+           (month == summer['end_month'] and day <= summer['end_day']) or \
+           (month > summer['start_month'] and month < summer['end_month']):
+            return 'summer_vacation', '暑假'
+    
+    # 检查法定节假日
+    for holiday in HOLIDAY_CALENDAR['national_holidays']:
+        if month == holiday['month'] and abs(day - holiday['day']) <= holiday['days'] // 2:
+            return 'national_holiday', holiday['name']
+    
+    # 检查考试期间
+    for exam in HOLIDAY_CALENDAR['exam_periods']:
+        if month == exam['month'] and exam['start_day'] <= day <= exam['end_day']:
+            return 'exam_period', exam['name']
+    
+    return 'school_day', '上学日'
+
+def get_current_time_period():
+    """获取当前时间段和对应的活动"""
+    now = datetime.now()
+    hour = now.hour
+    minute = now.minute
+    weekday = now.weekday()  # 0=Monday, 6=Sunday
+    
+    # 检查假期状态
+    holiday_type, holiday_name = check_holiday_status()
+    
+    is_weekend = weekday >= 5  # Saturday=5, Sunday=6
+    
+    # 假期期间使用周末时间表
+    if holiday_type in ['winter_vacation', 'summer_vacation', 'national_holiday']:
+        schedule = DAILY_SCHEDULE['weekend']
+        is_weekend = True  # 假期当作周末处理
+    else:
+        schedule = DAILY_SCHEDULE['weekend' if is_weekend else 'weekday']
+    
+    current_time = hour + minute / 60.0
+    
+    for activity, time_range in schedule.items():
+        if activity == 'sleep' and not is_weekend:
+            # 工作日睡眠时间跨越午夜
+            if current_time >= 22 or current_time < 6:
+                return activity, is_weekend, holiday_type, holiday_name
+        elif activity == 'sleep_in' and is_weekend:
+            # 周末/假期睡眠时间
+            if current_time >= 22 or current_time < 10:
+                return activity, is_weekend, holiday_type, holiday_name
+        else:
+            start_hour, start_min, end_hour, end_min = time_range
+            start_time = start_hour + start_min / 60.0
+            end_time = end_hour + end_min / 60.0
+            
+            if start_time <= current_time < end_time:
+                return activity, is_weekend, holiday_type, holiday_name
+    
+    return 'free_time', is_weekend, holiday_type, holiday_name
+
+def calculate_time_factor():
+    """计算基于作息时间的情绪因子"""
+    activity, is_weekend, holiday_type, holiday_name = get_current_time_period()
+    now = datetime.now()
+    hour = now.hour
+    
+    factor = 0
+    reason = ""
+    
+    # 假期期间的特殊处理
+    if holiday_type == 'winter_vacation':
+        factor = 30
+        reason = "寒假超开心"
+        if activity == 'sleep_in' and hour < 10:
+            factor = -20
+            reason = "寒假被吵醒"
+    elif holiday_type == 'summer_vacation':
+        factor = 35
+        reason = "暑假太爽了"
+        if activity == 'sleep_in' and hour < 11:
+            factor = -15
+            reason = "暑假想睡懒觉"
+    elif holiday_type == 'national_holiday':
+        factor = 25
+        reason = f"{holiday_name}放假"
+    elif holiday_type == 'exam_period':
+        factor = -25
+        reason = f"{holiday_name}压力大"
+        if activity in ['morning_study', 'afternoon_study', 'evening_study']:
+            factor = -30
+            reason = "考试周不想学"
+    elif is_weekend:
+        # 普通周末
+        if activity == 'sleep_in':
+            if hour < 8:
+                factor = -30
+                reason = "被打扰睡眠很烦"
+            else:
+                factor = -15
+                reason = "还想再睡会"
+        elif activity == 'outdoor_morning':
+            factor = 20
+            reason = "想去骑车"
+        elif activity == 'outdoor_afternoon':
+            activities = ['露营', '徒步', '骑车']
+            chosen_activity = random.choice(activities)
+            factor = 25
+            reason = f"想去{chosen_activity}"
+        elif activity == 'afternoon_rest':
+            factor = -5
+            reason = "周末想补觉"
+        elif activity == 'entertainment':
+            factor = 15
+            reason = "周末娱乐时间"
+        else:
+            factor = 10
+            reason = "周末心情好"
+    else:
+        # 工作日上学
+        if activity == 'sleep':
+            factor = -35
+            reason = "睡眠时间被打扰"
+        elif activity in ['breakfast', 'lunch', 'dinner']:
+            if random.random() < 0.3:  # 30%概率饿了
+                factor = -20
+                reason = "肚子饿了"
+            else:
+                factor = 5
+                reason = "吃饭时间"
+        elif activity in ['morning_study', 'afternoon_study']:
+            # 上学日学习时间，根据科目调整情绪
+            favorite_subjects = XIAOBU_IDENTITY['subjects']['favorite']
+            difficult_subjects = XIAOBU_IDENTITY['subjects']['difficult']
+            
+            if random.choice(['数学', '物理', '语文', '英语']) in difficult_subjects:
+                factor = -5
+                reason = "不喜欢这科"
+            elif random.choice(['体育', '美术']) in favorite_subjects:
+                factor = 20
+                reason = "喜欢这节课"
+            else:
+                factor = 5
+                reason = "学习状态还行"
+        elif activity == 'evening_study':
+            factor = -10
+            reason = "晚自习累了"
+        elif activity == 'afternoon_nap':
+            factor = -10
+            reason = "午休时间困"
+        elif activity == 'free_time':
+            factor = 20
+            reason = "自由时间开心"
+    
+    return factor, reason, holiday_type, holiday_name
+
+def calculate_adolescent_factor():
+    """计算青春期随机情绪波动因子"""
+    now = datetime.now()
+    
+    # 检查是否处于情绪波动期
+    if (XIAOBU_STATE['last_mood_swing'] and 
+        (now - XIAOBU_STATE['last_mood_swing']).total_seconds() < 3600):  # 1小时内
+        # 仍在上次情绪波动影响中
+        current_state = XIAOBU_STATE['current_hormonal_state']
+        if current_state in ADOLESCENT_MOODS:
+            mood_config = ADOLESCENT_MOODS[current_state]
+            return mood_config['intensity'], f"青春期{current_state}"
+    
+    # 随机触发新的情绪波动
+    for mood, config in ADOLESCENT_MOODS.items():
+        if random.random() < config['probability'] / 100:  # 降低触发概率
+            XIAOBU_STATE['last_mood_swing'] = now
+            XIAOBU_STATE['current_hormonal_state'] = mood
+            return config['intensity'], f"青春期{mood}"
+    
+    # 正常状态，但有轻微随机波动
+    base_randomness = random.randint(-5, 5)
+    XIAOBU_STATE['current_hormonal_state'] = 'normal'
+    
+    return base_randomness, "青春期正常波动"
+
+def update_stress_level():
+    """更新压力等级"""
+    # 基于聊天频率计算压力
+    recent_chats = len([t for t in XIAOBU_STATE['chat_frequency'] 
+                       if (datetime.now() - t).total_seconds() < 3600])  # 1小时内
+    
+    # 基于时间段增加压力
+    activity, is_weekend, holiday_type, holiday_name = get_current_time_period()
+    
+    stress = 0
+    if recent_chats > 20:
+        stress += 30  # 聊天太频繁
+        
+    # 假期期间压力较低
+    if holiday_type in ['winter_vacation', 'summer_vacation', 'national_holiday']:
+        stress = max(0, stress - 20)  # 假期减压
+    elif holiday_type == 'exam_period':
+        stress += 40  # 考试期间压力很大
+    elif activity in ['morning_study', 'afternoon_study', 'evening_study'] and not is_weekend:
+        stress += 15  # 学习时间有压力
+        
+    if activity == 'sleep':
+        stress += 40  # 睡眠被打扰压力最大
+    
+    XIAOBU_STATE['stress_level'] = min(100, max(0, stress))
+    return stress
 
 def update_system_metrics():
     """更新系统性能指标"""
@@ -411,6 +843,9 @@ def call_claude(message, context):
         # 加载全局记忆
         global_memory = load_global_memory()
         
+        # 获取当前情绪状态
+        emotion_state = calculate_xiaobu_emotion()
+        
         # 修剪上下文以适应长度限制
         trimmed_context = trim_context(context, global_memory)
         
@@ -425,6 +860,10 @@ def call_claude(message, context):
         if trimmed_context:
             prompt_parts.append(f"# 对话上下文\n{chr(10).join(trimmed_context)}")
         
+        # 添加当前情绪状态
+        emotion_prompt = generate_emotion_prompt(emotion_state)
+        prompt_parts.append(f"# 当前情绪状态\n{emotion_prompt}")
+        
         # 添加用户消息
         prompt_parts.append(f"# 用户消息\n{message}")
         
@@ -435,6 +874,7 @@ def call_claude(message, context):
         total_length = len(full_prompt)
         print(f"完整prompt长度: {total_length}字符")
         print(f"用户输入: {message[:100]}{'...' if len(message) > 100 else ''}")
+        print(f"当前情绪: {emotion_state['emoji']} {emotion_state['emotion_type']} - {emotion_state['reason']}")
         
         result = subprocess.run(
             ['claude', '-p', full_prompt],
@@ -457,6 +897,138 @@ def call_claude(message, context):
         return None, "Claude 命令未找到"
     except Exception as e:
         return None, str(e)
+
+def generate_emotion_prompt(emotion_state):
+    """生成基于当前情绪的prompt指令"""
+    activity, is_weekend, holiday_type, holiday_name = get_current_time_period()
+    now = datetime.now()
+    
+    # 基础情绪描述
+    emotion_descriptions = {
+        'very_happy': '心情非常好，充满活力和积极性',
+        'happy': '心情不错，比较开朗和友好',
+        'neutral': '心情一般，比较平静',
+        'sad': '有点失落，情绪低落',
+        'very_sad': '心情很差，情绪低沉',
+        'angry': '感到愤怒和烦躁',
+        'anxious': '感到焦虑和不安',
+        'excited': '非常兴奋和激动',
+        'tired': '感到疲倦',
+        'stressed': '压力很大',
+        'sleepy': '感到困倦想睡觉',
+        'hungry': '肚子饿了，有点不耐烦',
+        'energetic': '精力充沛，充满干劲',
+        'moody': '情绪不稳定，容易烦躁',
+        'camping': '想去露营，对户外活动感兴趣',
+        'cycling': '想去骑车，对运动充满热情',
+        'hiking': '想去徒步，喜欢大自然',
+        'lazy_weekend': '周末想躺平，不想动',
+        'studying': '在学习状态，比较专注',
+        'rebellious': '有点叛逆，可能会顶嘴',
+        'irritated': '心情烦躁，容易发脾气',
+        'bored': '感到无聊，提不起兴趣',
+        'playful': '想玩耍，比较活泼',
+        'nervous': '感到紧张不安',
+        'confused': '感到困惑'
+    }
+    
+    # 活动状态描述
+    activity_descriptions = {
+        'sleep': '现在是睡眠时间，被打扰了很不高兴',
+        'sleep_in': '周末/假期想睡懒觉，不想被打扰',
+        'breakfast': '现在是早餐时间',
+        'lunch': '现在是午餐时间',
+        'dinner': '现在是晚餐时间',
+        'morning_study': '现在是上午学习时间',
+        'afternoon_study': '现在是下午学习时间',
+        'evening_study': '现在是晚自习时间',
+        'afternoon_nap': '现在是午休时间，有点困',
+        'outdoor_morning': '上午户外活动时间',
+        'outdoor_afternoon': '下午户外活动时间',
+        'entertainment': '娱乐时间，想放松',
+        'free_time': '自由时间，可以放松一下',
+        'afternoon_rest': '下午休息时间'
+    }
+    
+    # 假期状态描述
+    holiday_descriptions = {
+        'winter_vacation': '寒假期间，不用上学超开心',
+        'summer_vacation': '暑假期间，自由自在',
+        'national_holiday': f'{holiday_name}假期',
+        'exam_period': f'{holiday_name}期间，压力很大',
+        'school_day': '上学日'
+    }
+    
+    # 青春期状态描述
+    hormonal_descriptions = {
+        'irritable': '青春期荷尔蒙波动，容易发脾气',
+        'moody': '青春期情绪不稳定',
+        'rebellious': '青春期叛逆期，可能会反驳',
+        'hyperactive': '青春期精力旺盛',
+        'emotional': '青春期情绪敏感',
+        'normal': ''
+    }
+    
+    emotion_desc = emotion_descriptions.get(emotion_state['emotion_type'], '心情一般')
+    activity_desc = activity_descriptions.get(activity, activity)
+    holiday_desc = holiday_descriptions.get(holiday_type, '普通日子')
+    hormonal_desc = hormonal_descriptions.get(emotion_state.get('hormonal_state', 'normal'), '')
+    
+    time_str = f"{now.hour:02d}:{now.minute:02d}"
+    
+    # 构建身份信息
+    identity = emotion_state.get('identity', XIAOBU_IDENTITY)
+    favorite_subjects = "、".join(identity['subjects']['favorite'])
+    difficult_subjects = "、".join(identity['subjects']['difficult'])
+    interests = "、".join(identity['interests'])
+    
+    prompt = f"""你是{identity['name']}，{identity['age']}岁，{identity['grade']}学生，就读于{identity['school']}。
+
+## 个人信息
+- 姓名: {identity['name']}
+- 年龄: {identity['age']}岁  
+- 年级: {identity['grade']}
+- 学校: {identity['school']}
+- 地点: {identity['location']}
+- 爱好: {interests}
+- 喜欢的科目: {favorite_subjects}
+- 不喜欢的科目: {difficult_subjects}
+
+## 当前状态
+- 时间: {time_str}
+- 日期状态: {holiday_desc}
+- 情绪: {emotion_state['emoji']} {emotion_desc}
+- 原因: {emotion_state['reason']}
+- 活动: {activity_desc}
+- 情绪值: {emotion_state['emotion_value']}/100
+- 压力等级: {emotion_state.get('stress_level', 0)}/100"""
+
+    if hormonal_desc:
+        prompt += f"\n- 青春期状态: {hormonal_desc}"
+    
+    prompt += f"""
+
+## 回复指导
+请根据你的身份和当前状态回复用户：
+
+1. **角色一致性**: 保持{identity['age']}岁{identity['grade']}学生的身份
+2. **情绪表达**: 体现当前的{emotion_state['emotion_type']}情绪
+3. **时间感知**: 考虑现在是{holiday_desc}的{activity_desc}
+4. **性格特点**: 展现初中生的表达方式和思维模式
+5. **学科态度**: 对{difficult_subjects}表现出困难，对{favorite_subjects}表现出兴趣
+6. **假期心态**: 
+   - 如果是假期，不想学习，想玩耍放松
+   - 如果是考试期间，表现出压力和焦虑
+   - 如果是上学日，按正常作息反应
+7. **地域特色**: 偶尔提及武汉的特色（如热干面、黄鹤楼等）
+8. **青春期特征**: 
+   - 可能会有情绪波动
+   - 对某些话题比较敏感
+   - 有时会表现出叛逆或倔强
+
+用自然、真实的初中生语言回复，避免过于成熟或老气的表达。"""
+    
+    return prompt
 
 @app.route('/')
 def index():
@@ -740,17 +1312,49 @@ def get_xiaobu_emotion():
     emotion_state = calculate_xiaobu_emotion()
     weather_data = get_wuhan_weather()
     
+    # 获取当前时间信息
+    now = datetime.now()
+    activity, is_weekend, holiday_type, holiday_name = get_current_time_period()
+    
     return jsonify({
-        'timestamp': datetime.now().isoformat(),
+        'timestamp': now.isoformat(),
         'emotion': emotion_state['emotion_type'],
         'emoji': emotion_state['emoji'],
         'reason': emotion_state['reason'],
         'emotion_value': emotion_state['emotion_value'],
+        'activity': emotion_state['activity'],
+        'is_weekend': emotion_state['is_weekend'],
+        'holiday_type': emotion_state['holiday_type'],
+        'holiday_name': emotion_state['holiday_name'],
+        'stress_level': emotion_state['stress_level'],
+        'hormonal_state': XIAOBU_STATE['current_hormonal_state'],
+        'identity': emotion_state['identity'],
         'factors': emotion_state['factors'],
         'weather': weather_data,
+        'time_info': {
+            'hour': now.hour,
+            'minute': now.minute,
+            'weekday': now.weekday(),
+            'current_activity': activity
+        },
         'chat_frequency_recent': len([t for t in XIAOBU_STATE['chat_frequency'] 
-                                    if (datetime.now() - t).total_seconds() < 600]),
+                                    if (now - t).total_seconds() < 600]),
         'total_chats_today': len(XIAOBU_STATE['chat_frequency'])
+    })
+
+@app.route('/api/xiaobu/schedule', methods=['GET'])
+def get_xiaobu_schedule():
+    """获取小布的作息时间表"""
+    now = datetime.now()
+    is_weekend = now.weekday() >= 5
+    current_schedule = DAILY_SCHEDULE['weekend' if is_weekend else 'weekday']
+    
+    return jsonify({
+        'timestamp': now.isoformat(),
+        'is_weekend': is_weekend,
+        'current_schedule': current_schedule,
+        'adolescent_moods': ADOLESCENT_MOODS,
+        'current_activity': get_current_time_period()[0]
     })
 
 @app.route('/api/realtime/status')
@@ -827,14 +1431,31 @@ def start_background_monitoring():
     print("后台监控线程已启动")
 
 if __name__ == '__main__':
-    print("启动Claude聊天机器人服务...")
-    print("API端点:")
+    print("启动小布智能情绪聊天机器人...")
+    print("🎭 情绪系统: 基于时间、天气、青春期特征的智能情绪曲线")
+    print("📅 作息管理: 初中生作息时间表，工作日/周末模式切换")
+    print("🌊 青春期模拟: 随机情绪波动、易怒、叛逆等特征")
+    print("\nAPI端点:")
     print("- GET  /api/service-status     - 获取服务状态")
     print("- GET  /api/emotions           - 获取情绪分析数据")
     print("- GET  /api/emotions/summary   - 获取情绪摘要")
-    print("- GET  /api/xiaobu/emotion     - 获取小布情绪状态")
+    print("- GET  /api/xiaobu/emotion     - 获取小布当前情绪状态")
+    print("- GET  /api/xiaobu/schedule    - 获取小布作息时间表")
     print("- GET  /api/realtime/status    - 实时服务状态推送(SSE)")
     print("- GET  /api/realtime/emotions  - 实时情绪数据推送(SSE)")
+    print("\n🕐 当前状态:")
+    
+    # 显示当前情绪状态
+    try:
+        emotion_state = calculate_xiaobu_emotion()
+        activity, is_weekend = get_current_time_period()
+        print(f"- 情绪: {emotion_state['emoji']} {emotion_state['emotion_type']} ({emotion_state['reason']})")
+        print(f"- 活动: {'周末' if is_weekend else '工作日'} - {activity}")
+        print(f"- 情绪值: {emotion_state['emotion_value']}/100")
+        print(f"- 压力等级: {emotion_state['stress_level']}/100")
+        print(f"- 青春期状态: {XIAOBU_STATE['current_hormonal_state']}")
+    except Exception as e:
+        print(f"- 情绪系统初始化中... ({e})")
     
     # 启动后台监控
     start_background_monitoring()
