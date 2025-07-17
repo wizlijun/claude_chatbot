@@ -94,7 +94,7 @@
         }
 
         .emotion-display {
-            font-size: 16px;
+            font-size: 14px;
             margin-left: 4px;
             cursor: pointer;
         }
@@ -341,7 +341,7 @@
             }
             
             .emotion-display {
-                font-size: 14px;
+                font-size: 12px;
             }
             
             .chat-container {
@@ -369,7 +369,7 @@
                     <span class="emotion-display" id="emotionDisplay" onclick="updateXiaobuEmotion()"></span>
                 </div>
             </div>
-            <button class="clear-btn" onclick="clearContext()">清除上下文</button>
+            <button class="clear-btn" onclick="clearContext()">拍拍脑袋</button>
         </div>
         
         <div class="chat-container" id="chatContainer">
@@ -445,11 +445,14 @@
             const emotionDisplay = document.getElementById('emotionDisplay');
             
             if (emotionData && connectionStatus === 'online') {
-                emotionDisplay.textContent = emotionData.emoji;
+                // 获取活动短句
+                const activityText = getActivityText(emotionData.activity, emotionData.is_weekend);
+                
+                // 在表情包后面显示情绪原因
+                emotionDisplay.textContent = `${emotionData.emoji} ${emotionData.reason}`;
                 
                 // 构建详细的tooltip信息
                 const timeInfo = emotionData.time_info;
-                const activityText = getActivityText(emotionData.activity, emotionData.is_weekend);
                 const stressText = emotionData.stress_level > 30 ? `压力:${emotionData.stress_level}` : '';
                 const hormonalText = emotionData.hormonal_state !== 'normal' ? `状态:${emotionData.hormonal_state}` : '';
                 
@@ -465,7 +468,7 @@
                 
                 emotionDisplay.title = tooltipParts.join('\n');
             } else if (connectionStatus === 'offline') {
-                emotionDisplay.textContent = '⚠️';
+                emotionDisplay.textContent = '⚠️ 连接断开';
                 emotionDisplay.title = '连接断开';
             } else {
                 emotionDisplay.textContent = '';
@@ -738,7 +741,7 @@
             messageInput.disabled = loading;
             
             if (loading) {
-                sendBtn.textContent = '⏹';
+                sendBtn.textContent = '▣';
                 sendBtn.onclick = stopCurrentRequest;
                 sendBtn.disabled = false;
                 sendBtn.classList.add('stop');
@@ -772,7 +775,7 @@
             // 立即显示bot正在思考的消息
             const thinkingMessage = {
                 type: 'bot',
-                content: '正在思考...',
+                content: '对方正在输入',
                 timestamp: new Date().toISOString(),
                 isThinking: true
             };
