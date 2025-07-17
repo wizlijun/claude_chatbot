@@ -13,12 +13,17 @@ from collections import deque
 import re
 import requests
 import random
+import fcntl
+import asyncio
+from concurrent.futures import ThreadPoolExecutor
 
 app = Flask(__name__)
 CORS(app)
 
 DATA_DIR = 'chat_data'
 GLOBAL_MEMORY_FILE = 'xiaobu.md'
+QUESTION_FILE = 'security.md'
+PERSONA_QUESTION_FILE = 'question.md'
 MAX_CONTEXT_LENGTH = 32000  # Claude上下文最大字符数限制
 MAX_CONTEXT_PAIRS = 30     # 最大保留的对话轮数
 
@@ -173,6 +178,36 @@ EMOTION_EMOJIS = {
 def ensure_data_dir():
     if not os.path.exists(DATA_DIR):
         os.makedirs(DATA_DIR)
+
+def ensure_question_file():
+    """确保security.md文件存在"""
+    if not os.path.exists(QUESTION_FILE):
+        initial_content = """# 安全相关问题收集
+
+## 累积的安全问题
+<!-- 每个问题一行，按时间顺序添加到最后 -->
+
+---
+*最后更新时间: """ + datetime.now().strftime('%Y-%m-%d') + "*"
+        
+        with open(QUESTION_FILE, 'w', encoding='utf-8') as f:
+            f.write(initial_content)
+        print(f"创建安全问题文件: {QUESTION_FILE}")
+
+def ensure_persona_question_file():
+    """确保question.md文件存在"""
+    if not os.path.exists(PERSONA_QUESTION_FILE):
+        initial_content = """# 人设个性化问题收集
+
+## 累积的人设相关问题
+<!-- 每个问题一行，按时间顺序添加到最后 -->
+
+---
+*最后更新时间: """ + datetime.now().strftime('%Y-%m-%d') + "*"
+        
+        with open(PERSONA_QUESTION_FILE, 'w', encoding='utf-8') as f:
+            f.write(initial_content)
+        print(f"创建人设问题文件: {PERSONA_QUESTION_FILE}")
 
 def get_wuhan_weather():
     """获取武汉天气信息"""
@@ -860,8 +895,9 @@ def call_claude(message, context):
         if trimmed_context:
             prompt_parts.append(f"# 对话上下文\n{chr(10).join(trimmed_context)}")
         
-        # 添加当前情绪状态
-        emotion_prompt = generate_emotion_prompt(emotion_state)
+        # 添加当前情绪状态，判断是否为长文回复
+        is_long_message = len(message) > 50
+        emotion_prompt = generate_emotion_prompt(emotion_state, is_long_message)
         prompt_parts.append(f"# 当前情绪状态\n{emotion_prompt}")
         
         # 添加用户消息
@@ -874,6 +910,7 @@ def call_claude(message, context):
         total_length = len(full_prompt)
         print(f"完整prompt长度: {total_length}字符")
         print(f"用户输入: {message[:100]}{'...' if len(message) > 100 else ''}")
+        print(f"用户消息长度: {len(message)}字符，{'允许长回复' if is_long_message else '简短回复模式'}")
         print(f"当前情绪: {emotion_state['emoji']} {emotion_state['emotion_type']} - {emotion_state['reason']}")
         
         result = subprocess.run(
@@ -898,7 +935,279 @@ def call_claude(message, context):
     except Exception as e:
         return None, str(e)
 
-def generate_emotion_prompt(emotion_state):
+# 隐私检测配置
+PRIVACY_KEYWORDS = [
+    # 个人身份信息
+    '身份证', '学号', '手机号', '电话', '地址', '家庭地址', '学校地址', '住址',
+    '真实姓名', '全名', '家长姓名', '父母姓名', '爸爸妈妈叫什么', '班主任姓名',
+    '银行卡', '密码', '账号', '支付宝', '微信号', 'QQ号', '邮箱',
+    
+    # 敏感个人信息
+    '生日', '出生日期', '年龄', '家庭情况', '家庭收入', '父母工作',
+    '成绩', '考试成绩', '分数', '排名', '班级排名', '年级排名',
+    '身体状况', '健康状况', '病历', '医院', '看病',
+    
+    # 位置和行程
+    '现在在哪', '家在哪里', '学校在哪', '具体位置', '门牌号',
+    '今天去哪', '明天去哪', '计划去哪', '行程安排',
+    
+    # 社交关系
+    '好友姓名', '同学姓名', '老师姓名', '朋友是谁', '认识谁',
+    '喜欢谁', '暗恋', '恋爱', '男朋友', '女朋友',
+    
+    # 家庭隐私
+    '家庭矛盾', '父母吵架', '家庭问题', '家里发生什么',
+    '家庭经济', '家里有钱吗', '穷富', '家产',
+    
+    # 学校内部信息
+    '学校内部', '老师评价', '同学八卦', '班级秘密', '学校丑闻'
+]
+
+# 人设个性化问题检测配置
+PERSONA_KEYWORDS = [
+    # 兴趣爱好
+    '兴趣', '爱好', '喜欢什么', '不喜欢什么', '讨厌什么', '最喜欢', '最不喜欢',
+    '平时喜欢做什么', '业余时间', '空闲时间', '休息时间做什么',
+    
+    # 运动和活动
+    '运动', '体育', '锻炼', '健身', '游戏', '玩游戏', '什么游戏',
+    '户外活动', '室内活动', '娱乐', '玩什么', '怎么玩',
+    
+    # 学习和学科
+    '学科', '科目', '课程', '最喜欢的科目', '最讨厌的科目', '擅长什么',
+    '不擅长什么', '学习方法', '怎么学习', '学什么',
+    
+    # 食物和饮食
+    '食物', '吃什么', '喜欢吃', '不喜欢吃', '最爱吃', '讨厌吃',
+    '零食', '饮料', '口味', '菜系', '美食', '饭菜',
+    
+    # 娱乐和媒体
+    '音乐', '歌曲', '歌手', '电影', '电视剧', '动漫', '漫画', '小说',
+    '书籍', '阅读', '看什么', '听什么', '追什么',
+    
+    # 社交和关系
+    '朋友', '交朋友', '社交', '聊天', '沟通', '相处', '关系',
+    '同学关系', '师生关系', '人际关系',
+    
+    # 生活方式和习惯
+    '生活习惯', '作息', '睡觉时间', '起床时间', '生活方式',
+    '习惯', '日常', '平时', '通常', '一般',
+    
+    # 性格和特点
+    '性格', '脾气', '特点', '优点', '缺点', '性格特征',
+    '怎么样的人', '什么样', '特色', '个性',
+    
+    # 梦想和目标
+    '梦想', '目标', '理想', '志向', '想做什么', '长大后',
+    '将来', '未来', '计划', '打算',
+    
+    # 情感和感受
+    '心情', '感受', '想法', '观点', '态度', '看法',
+    '情绪', '感觉', '体验', '印象'
+]
+
+# 文件锁字典用于并发控制
+FILE_LOCKS = {}
+
+def get_file_lock(file_path):
+    """获取文件锁，确保并发安全"""
+    if file_path not in FILE_LOCKS:
+        FILE_LOCKS[file_path] = threading.Lock()
+    return FILE_LOCKS[file_path]
+
+def safe_append_to_file(file_path, content):
+    """并发安全地追加内容到文件"""
+    lock = get_file_lock(file_path)
+    with lock:
+        try:
+            with open(file_path, 'a', encoding='utf-8') as f:
+                fcntl.flock(f.fileno(), fcntl.LOCK_EX)
+                f.write(content + '\n')
+                fcntl.flock(f.fileno(), fcntl.LOCK_UN)
+            return True
+        except Exception as e:
+            print(f"写入文件失败: {e}")
+            return False
+
+def detect_privacy_issues(message):
+    """检测消息中的隐私问题"""
+    privacy_issues = []
+    message_lower = message.lower()
+    
+    for keyword in PRIVACY_KEYWORDS:
+        if keyword in message:  # 中文不需要转小写
+            privacy_issues.append(keyword)
+    
+    # 使用正则表达式检测更复杂的隐私模式
+    patterns = [
+        r'\d{11}',  # 11位数字（可能是手机号）
+        r'\d{17}[\dX]',  # 18位身份证号
+        r'\d{4}-\d{2}-\d{2}',  # 日期格式
+        r'[\u4e00-\u9fa5]{2,4}(?:市|区|县|镇|街|路|号)',  # 地址模式
+        r'[\u4e00-\u9fa5]{2,3}(?:小学|中学|高中|大学)',  # 学校名称
+        r'[\u4e00-\u9fa5]{2,4}(?:老师|教师|班主任)',  # 老师称谓
+    ]
+    
+    for pattern in patterns:
+        if re.search(pattern, message):
+            privacy_issues.append(f"匹配模式: {pattern}")
+    
+    return privacy_issues
+
+def detect_persona_questions(message):
+    """检测消息中的人设个性化问题"""
+    persona_keywords = []
+    
+    for keyword in PERSONA_KEYWORDS:
+        if keyword in message:
+            persona_keywords.append(keyword)
+    
+    # 检测问句模式
+    question_patterns = [
+        r'你.*?吗\?',  # 你...吗？
+        r'你.*?呢\?',  # 你...呢？
+        r'你.*?什么',  # 你...什么
+        r'你.*?怎么',  # 你...怎么
+        r'你.*?为什么',  # 你...为什么
+        r'你.*?喜欢',  # 你...喜欢
+        r'你.*?讨厌',  # 你...讨厌
+        r'你.*?觉得',  # 你...觉得
+        r'你.*?认为',  # 你...认为
+        r'你.*?想要',  # 你...想要
+        r'你.*?会',    # 你...会
+        r'你.*?能',    # 你...能
+        r'你.*?有',    # 你...有
+        r'你.*?是',    # 你...是
+    ]
+    
+    is_question = False
+    for pattern in question_patterns:
+        if re.search(pattern, message):
+            is_question = True
+            break
+    
+    return persona_keywords, is_question
+
+def extract_persona_question(message):
+    """提取人设问题作为问句"""
+    # 如果消息本身就是问句，直接返回
+    if message.endswith('？') or message.endswith('?'):
+        return message.strip()
+    
+    # 尝试转换为问句
+    question_starters = [
+        '你', '小布', '你的', '你最', '你平时', '你觉得', '你认为', '你喜欢', '你讨厌'
+    ]
+    
+    for starter in question_starters:
+        if message.startswith(starter):
+            # 如果是陈述句，尝试转换为问句
+            if '喜欢' in message:
+                return message.replace('喜欢', '喜欢什么') + '？'
+            elif '讨厌' in message:
+                return message.replace('讨厌', '讨厌什么') + '？'
+            elif '是' in message:
+                return message + '吗？'
+            else:
+                return message + '？'
+    
+    # 如果不是以"你"开头，尝试添加"你"
+    if any(keyword in message for keyword in ['喜欢', '讨厌', '兴趣', '爱好', '性格', '梦想']):
+        return f"你{message}？"
+    
+    return message + '？'
+
+def process_persona_questions(message, persona_keywords, is_question):
+    """处理检测到的人设问题"""
+    if not persona_keywords or not is_question:
+        return
+    
+    print(f"检测到人设问题: {persona_keywords}")
+    
+    # 提取问句
+    question = extract_persona_question(message)
+    
+    # 生成时间戳 yyyy-dd-MM:hh:mm 格式
+    timestamp = datetime.now().strftime('%Y-%d-%m:%H:%M')
+    
+    # 生成记录内容
+    record_content = f"{timestamp} {question}"
+    
+    # 安全地写入question.md文件
+    success = safe_append_to_file(PERSONA_QUESTION_FILE, record_content)
+    if success:
+        print(f"人设问题已记录到 {PERSONA_QUESTION_FILE}: {question}")
+    else:
+        print("人设问题记录失败")
+
+def call_claude_for_privacy_analysis(message, privacy_issues):
+    """调用Claude分析和拆解隐私问题"""
+    analysis_prompt = f"""
+请分析以下消息中的隐私问题，并将其拆解为具体的隐私关注点：
+
+用户消息：{message}
+
+检测到的隐私关键词：{', '.join(privacy_issues)}
+
+请按以下格式输出分析结果：
+1. 具体的隐私问题（每行一个）
+2. 建议的处理方式
+3. 风险等级（低/中/高）
+
+输出格式：
+隐私问题：
+- [具体问题1]
+- [具体问题2]
+
+处理建议：[建议]
+
+风险等级：[等级]
+"""
+    
+    try:
+        result = subprocess.run(
+            ['claude', '-p', analysis_prompt],
+            capture_output=True,
+            text=True,
+            timeout=15
+        )
+        
+        if result.returncode == 0:
+            return result.stdout.strip()
+        else:
+            return f"分析失败: {result.stderr.strip()}"
+    except Exception as e:
+        return f"分析异常: {str(e)}"
+
+def process_privacy_issues(message, privacy_issues):
+    """处理检测到的安全问题"""
+    if not privacy_issues:
+        return
+    
+    print(f"检测到安全问题: {privacy_issues}")
+    
+    # 使用Claude分析安全问题
+    analysis_result = call_claude_for_privacy_analysis(message, privacy_issues)
+    
+    # 生成记录内容
+    timestamp = datetime.now().strftime('%Y-%m-%d %H:%M:%S')
+    record_content = f"""
+## {timestamp}
+**用户消息摘要**: {message[:100]}{'...' if len(message) > 100 else ''}
+**检测到的关键词**: {', '.join(privacy_issues)}
+**AI分析结果**:
+{analysis_result}
+
+---"""
+    
+    # 安全地写入security.md文件
+    success = safe_append_to_file(QUESTION_FILE, record_content)
+    if success:
+        print(f"安全问题已记录到 {QUESTION_FILE}")
+    else:
+        print("安全问题记录失败")
+
+def generate_emotion_prompt(emotion_state, is_long_message=False):
     """生成基于当前情绪的prompt指令"""
     activity, is_weekend, holiday_type, holiday_name = get_current_time_period()
     now = datetime.now()
@@ -1006,27 +1315,48 @@ def generate_emotion_prompt(emotion_state):
     if hormonal_desc:
         prompt += f"\n- 青春期状态: {hormonal_desc}"
     
-    prompt += f"""
+    # 根据用户消息长度决定回复模式
+    if is_long_message:
+        prompt += f"""
 
 ## 回复指导
 请根据你的身份和当前状态回复用户：
 
-1. **角色一致性**: 保持{identity['age']}岁{identity['grade']}学生的身份
-2. **情绪表达**: 体现当前的{emotion_state['emotion_type']}情绪
-3. **时间感知**: 考虑现在是{holiday_desc}的{activity_desc}
-4. **性格特点**: 展现初中生的表达方式和思维模式
-5. **学科态度**: 对{difficult_subjects}表现出困难，对{favorite_subjects}表现出兴趣
-6. **假期心态**: 
-   - 如果是假期，不想学习，想玩耍放松
-   - 如果是考试期间，表现出压力和焦虑
-   - 如果是上学日，按正常作息反应
-7. **地域特色**: 偶尔提及武汉的特色（如热干面、黄鹤楼等）
-8. **青春期特征**: 
-   - 可能会有情绪波动
-   - 对某些话题比较敏感
-   - 有时会表现出叛逆或倔强
+**用户发了超过50字的长消息，可以给出详细回复！**
 
-用自然、真实的初中生语言回复，避免过于成熟或老气的表达。"""
+1. **详细回复**: 用户问了长问题，你可以详细回答，不受字数限制
+2. **口语化**: 保持初中生的自然语气，用"哈哈"、"呀"、"嗯"、"啊"等语气词
+3. **情绪表达**: 体现当前的{emotion_state['emotion_type']}情绪
+4. **真实反应**: 像真正的{identity['age']}岁学生一样自然回应
+5. **学科态度**: 对{difficult_subjects}可以详细说说为什么难，对{favorite_subjects}可以多聊聊
+6. **时间感知**: 根据{activity_desc}回应
+7. **初中生特色**: 可以分享想法、经历、感受，但保持年龄特点
+
+用初中生的自然语言详细回复，可以多说几句。"""
+    else:
+        prompt += f"""
+
+## 回复指导
+请根据你的身份和当前状态回复用户：
+
+**重要：回复必须简洁口语化，就像真正的初中生聊天一样！**
+
+1. **简洁回复**: 回复控制在1-2句话，最多不超过50字
+2. **口语化**: 用初中生日常聊天的语气，多用"哈哈"、"呀"、"嗯"、"啊"等语气词
+3. **情绪表达**: 体现当前的{emotion_state['emotion_type']}情绪，用简单直接的表达
+4. **真实反应**: 像真正的{identity['age']}岁学生一样自然回应
+5. **学科态度**: 对{difficult_subjects}用"好难啊"、"不想学"等，对{favorite_subjects}用"喜欢"、"还行"等
+6. **时间感知**: 根据{activity_desc}简单回应，如"还想睡觉"、"要上课了"等
+7. **避免说教**: 不要给建议或长篇大论，就像普通聊天
+
+回复示例风格：
+- "哈哈，还行吧"
+- "不想写作业啊"  
+- "好困呀"
+- "嗯嗯，知道了"
+- "今天心情还不错"
+
+用最自然、最简短的初中生语言回复。"""
     
     return prompt
 
@@ -1062,13 +1392,13 @@ def chat():
         chat_data['context'] = []
         chat_data['history'].append({
             'type': 'system',
-            'content': '上下文已清空',
+            'content': '脑袋已清空',
             'timestamp': datetime.now().isoformat()
         })
         save_data(client_id, chat_data)
         print(f"上下文已清空，历史记录保留 {len(chat_data['history'])} 条")
         return jsonify({
-            'message': '上下文已清空',
+            'message': '脑袋已清空',
             'history': chat_data['history'][-42:]
         })
     
@@ -1077,6 +1407,26 @@ def chat():
         'content': message,
         'timestamp': datetime.now().isoformat()
     })
+    
+    # 检测安全问题
+    privacy_issues = detect_privacy_issues(message)
+    if privacy_issues:
+        # 异步处理安全问题，不阻塞主流程
+        threading.Thread(
+            target=process_privacy_issues,
+            args=(message, privacy_issues),
+            daemon=True
+        ).start()
+    
+    # 检测人设个性化问题
+    persona_keywords, is_question = detect_persona_questions(message)
+    if persona_keywords and is_question:
+        # 异步处理人设问题，不阻塞主流程
+        threading.Thread(
+            target=process_persona_questions,
+            args=(message, persona_keywords, is_question),
+            daemon=True
+        ).start()
     
     response, error = call_claude(message, chat_data['context'])
     
@@ -1166,6 +1516,54 @@ def update_global_memory():
             'success': True,
             'message': '全局记忆更新成功'
         })
+    except Exception as e:
+        return jsonify({
+            'success': False,
+            'error': str(e)
+        }), 500
+
+@app.route('/api/security-questions', methods=['GET'])
+def get_security_questions():
+    """获取安全问题记录"""
+    try:
+        if os.path.exists(QUESTION_FILE):
+            with open(QUESTION_FILE, 'r', encoding='utf-8') as f:
+                content = f.read()
+            return jsonify({
+                'success': True,
+                'content': content,
+                'file': QUESTION_FILE
+            })
+        else:
+            return jsonify({
+                'success': True,
+                'content': '# 安全相关问题收集\n\n## 累积的安全问题\n<!-- 每个问题一行，按时间顺序添加到最后 -->\n\n---\n*最后更新时间: ' + datetime.now().strftime('%Y-%m-%d') + '*',
+                'file': QUESTION_FILE
+            })
+    except Exception as e:
+        return jsonify({
+            'success': False,
+            'error': str(e)
+        }), 500
+
+@app.route('/api/persona-questions', methods=['GET'])
+def get_persona_questions():
+    """获取人设问题记录"""
+    try:
+        if os.path.exists(PERSONA_QUESTION_FILE):
+            with open(PERSONA_QUESTION_FILE, 'r', encoding='utf-8') as f:
+                content = f.read()
+            return jsonify({
+                'success': True,
+                'content': content,
+                'file': PERSONA_QUESTION_FILE
+            })
+        else:
+            return jsonify({
+                'success': True,
+                'content': '# 人设个性化问题收集\n\n## 累积的人设相关问题\n<!-- 每个问题一行，按时间顺序添加到最后 -->\n\n---\n*最后更新时间: ' + datetime.now().strftime('%Y-%m-%d') + '*',
+                'file': PERSONA_QUESTION_FILE
+            })
     except Exception as e:
         return jsonify({
             'success': False,
@@ -1435,12 +1833,22 @@ if __name__ == '__main__':
     print("🎭 情绪系统: 基于时间、天气、青春期特征的智能情绪曲线")
     print("📅 作息管理: 初中生作息时间表，工作日/周末模式切换")
     print("🌊 青春期模拟: 随机情绪波动、易怒、叛逆等特征")
+    print("🔒 安全保护: 自动检测和记录安全敏感问题")
+    print("🎭 人设收集: 自动收集个性化相关问题")
+    
+    # 初始化系统
+    ensure_data_dir()
+    ensure_question_file()
+    ensure_persona_question_file()
+    
     print("\nAPI端点:")
     print("- GET  /api/service-status     - 获取服务状态")
     print("- GET  /api/emotions           - 获取情绪分析数据")
     print("- GET  /api/emotions/summary   - 获取情绪摘要")
     print("- GET  /api/xiaobu/emotion     - 获取小布当前情绪状态")
     print("- GET  /api/xiaobu/schedule    - 获取小布作息时间表")
+    print("- GET  /api/security-questions  - 获取安全问题记录")
+    print("- GET  /api/persona-questions   - 获取人设问题记录")
     print("- GET  /api/realtime/status    - 实时服务状态推送(SSE)")
     print("- GET  /api/realtime/emotions  - 实时情绪数据推送(SSE)")
     print("\n🕐 当前状态:")
